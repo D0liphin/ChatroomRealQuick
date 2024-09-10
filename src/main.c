@@ -328,29 +328,35 @@ int cmdlisten(int const argc, char const *argv[])
         }
 
         int epollfd = epoll_create1(0);
-        struct epoll_event event = { EPOLLIN, { .fd = pubsockfd } };
+        struct epoll_event event = { EPOLLIN, { .u64 = 0 } };
         epoll_ctl(epollfd, EPOLL_CTL_ADD, pubsockfd, &event);
 
-        bool dorun = true;
         struct dynarray sockdata = dynarray_new(); // struct sockdata
+        DYNARRAY_PUSH(&sockdata, struct sockdata,
+                      ((struct sockdata){
+                              .sockfd = pubsockfd,
+                              .name = cstring_is("pub"),
+                      }));
+
+        bool dorun = true;
         struct epoll_event events[MAX_EVENTS];
         while (dorun) {
                 size_t nr_events = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_TIMEOUT);
                 struct dynarray msg = dynarray_new();
                 for (size_t i = 0; i < nr_events; ++i) {
-                        if (events[i].data.fd == pubsockfd) {
+                        struct sockdata client = *(struct sockdata *)dynarray_get(
+                                &sockdata, TYPEINFO(struct sockdata), events[i].data.u64);
+                        if (client.sockfd == pubsockfd) {
                                 // A new client connected
                                 ssize_t index = accept_client(pubsockfd, &sockdata, epollfd);
+                                struct sockdata newclient = *(struct sockdata *)dynarray_get(
+                                        &sockdata, TYPEINFO(struct sockdata), index);
                                 if (index == -1) {
                                         puts("Client attempted to connect, but was invalid");
                                 }
-                                struct sockdata client = *(struct sockdata *)dynarray_get(
-                                        &sockdata, TYPEINFO(struct sockdata), index);
-                                printf(BLUE("%s connected\n"), cstring_as_cstr(&client.name));
+                                printf(BLUE("%s connected\n"), cstring_as_cstr(&newclient.name));
                         } else {
                                 // An existing client sent us something
-                                struct sockdata client = *(struct sockdata *)dynarray_get(
-                                        &sockdata, TYPEINFO(struct sockdata), events[i].data.u64);
                                 msg.len = 0;
                                 ssize_t recvd = dynarray_recv(&msg, client.sockfd, terminate_msg);
                                 if (recvd == -1) {
