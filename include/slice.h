@@ -36,7 +36,7 @@ void *slice_end(slice self);
  * Bounds-checked slice element access of the n-th element. The returned pointer
  * is valid for reads and writes of the inner type.
  */
-void *slice_get(slice self, struct type val_type, size_t index);
+void *slice_get(slice self, struct type val_type, ssize_t index);
 
 /**
  * The length of this slice, in multiples of the inner type.

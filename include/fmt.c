@@ -54,7 +54,7 @@ DEFINE_FMT_INTEGRAL(fmt_uintmax_oct, uintmax_t, "%jo")
 DEFINE_FMT_INTEGRAL(fmt_uintmax_hex, uintmax_t, "%jx")
 DEFINE_FMT_INTEGRAL(fmt_uintmax_uhex, uintmax_t, "%jX")
 
-void fmt_dynarray(struct cstring *restrict f, struct dynarray const *arr, struct type ty,
+void fmt_dynarray(struct cstring *restrict f, struct dynarray *arr, struct type ty,
                   formatter cb)
 {
         char *endch = " }";
@@ -64,8 +64,8 @@ void fmt_dynarray(struct cstring *restrict f, struct dynarray const *arr, struct
                 cstring_extend_cstr(f, endch);
         }
 
-        char const *it = dynarray_begin(arr);
-        char const *last = dynarray_end(arr) - ty.size;
+        char *it = dynarray_begin(arr);
+        char *last = dynarray_end(arr) - ty.size;
         for (; it != last; it += ty.size) {
                 cb(f, (void const *)it);
                 cstring_extend_cstr(f, ", ");

@@ -14,12 +14,12 @@ struct dynarray dynarray_new()
         return arr;
 }
 
-void *dynarray_begin(struct dynarray const *self)
+void *dynarray_begin(struct dynarray *self)
 {
         return self->data;
 }
 
-void *dynarray_end(struct dynarray const *self)
+void *dynarray_end(struct dynarray *self)
 {
         return &((uint8_t *)self->data)[self->len];
 }
@@ -148,7 +148,7 @@ void dynarray_free(struct dynarray *restrict self)
  * access and just hope that the compiler understands the provenance of other
  * shared pointers.
  */
-void *dynarray_get(struct dynarray *self, struct type val_type, size_t index)
+void *dynarray_get(struct dynarray *self, struct type val_type, ssize_t index)
 {
         return slice_get(dynarray_as_slice(self), val_type, index);
 }

@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <sys/types.h>
 #include "./type.h"
 #include "./slice.h"
 #include "./panic.h"
@@ -15,9 +16,12 @@ void *slice_end(slice self)
         return self.end;
 }
 
-void *slice_get(slice self, struct type val_type, size_t index)
+void *slice_get(slice self, struct type val_type, ssize_t index)
 {
-        if (index < slice_length(self, val_type)) {
+        if (index < 0) {
+                index = (ssize_t)slice_length(self, val_type) + index; 
+        }
+        if (index < (ssize_t)slice_length(self, val_type)) {
                 return &((uint8_t *)self.begin)[index * val_type.size];
         }
         PANIC("index out of bounds: the length is %zu but the index is %zu",

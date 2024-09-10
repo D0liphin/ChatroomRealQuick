@@ -72,7 +72,7 @@ struct dynarray dynarray_new();
  * to a pointer to the inner type. And the resulting pointer is valid for reads
  * and writes of the inner type.
  */
-void *dynarray_begin(struct dynarray const *self);
+void *dynarray_begin(struct dynarray *self);
 
 /**
  * Acquire a pointer to the end of this array. This pointer is valid for casts
@@ -82,7 +82,7 @@ void *dynarray_begin(struct dynarray const *self);
  * If you wish to modify the next unoccupied cell in this array, you can use
  * `dynarray_next()` for a safer version.
  */
-void *dynarray_end(struct dynarray const *self);
+void *dynarray_end(struct dynarray *self);
 
 /**
  * Exponentially resize this dynamic array. This only produces unrecoverable
@@ -194,7 +194,7 @@ void dynarray_free(struct dynarray *self);
  * # Safety
  * `val_type` must be the inner type.
  */
-void *dynarray_get(struct dynarray *self, struct type val_type, size_t index);
+void *dynarray_get(struct dynarray *self, struct type val_type, ssize_t index);
 
 /**
  * Get a view into the entire allocated buffer as a `slice`. This buffer
@@ -207,9 +207,9 @@ slice dynarray_as_slice(struct dynarray *self);
  * Do a `memcmp()` over the contents of this buffer. This will work as you 
  * expect for all primitive types e.g. `int`, `long` etc. However, for types 
  * that have padding, e.g. 
- * ```c
- * struct Foo { int a; char b; };
- * ``` 
+ ```c
+ struct Foo { int a; char b; };
+ ``` 
  * you will need to make sure that the padding is zeroed (or set to some common
  * value). Otherwise two arrays with the same initialization pattern might 
  * not be considered equal.
@@ -229,10 +229,10 @@ bool dynarray_memeq(struct dynarray const *lhs, struct dynarray const *rhs);
  * easier. The expansion is quite self explanatory. For example, the following
  * two lines are equivalent:
  * 
- * ```c                 
- * dynarray_push(&arr, int, val);
- * *(int *)dynarray_next(&arr, TYPEINFO(int)) = val;
- * ```
+ ```c                 
+ dynarray_push(&arr, int, val);
+ *(int *)dynarray_next(&arr, TYPEINFO(int)) = val;
+ ```
  * 
  * There is essentially no case where we don't want to use `dynarray_next()` in 
  * this way, so I don't think defining a macro here is *so* evil. The user is

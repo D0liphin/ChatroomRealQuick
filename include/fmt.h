@@ -104,4 +104,4 @@ DECLARE_FMT_INTEGRAL(fmt_uintmax_uhex, uintmax_t, "%jX")
  { 1, 2, 3, 4 }
  ```
  */
-void fmt_dynarray(struct cstring *f, struct dynarray const *arr, struct type ty, formatter cb);
+void fmt_dynarray(struct cstring *f, struct dynarray *arr, struct type ty, formatter cb);

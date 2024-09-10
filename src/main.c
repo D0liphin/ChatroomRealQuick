@@ -7,11 +7,18 @@
 #include <netinet/in.h>
 #include <errno.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <sys/epoll.h>
 
 #include "../include/dynarray.h"
 #include "../include/cstring.h"
 #include "../include/fmt.h"
 #include "../include/slice.h"
+#include "../include/panic.h"
+#include "../include/jtable.h"
+
+#define EPOLL_TIMEOUT 10000
+#define MAX_EVENTS 100
 
 /**
  * Get a line from `stdin`, or just `len` `char`s of it if it's too long.
@@ -49,6 +56,7 @@ int inet_ntop_auto(struct sockaddr *sa, char *str)
                 cp = &((struct sockaddr_in6 *)sa)->sin6_addr;
                 break;
         default:
+                printf("sa->family = %d\n", sa->sa_family);
                 return -1;
         }
         inet_ntop(sa->sa_family, cp, str, INET6_ADDRSTRLEN);
@@ -103,6 +111,7 @@ int select_addrinfo(char const *name, char const *service, struct addrinfo **add
                 }
                 cstring_free(&selstr);
         }
+        puts("");
 
         *addrinfos_out = addrinfos;
         return sel;
@@ -133,6 +142,7 @@ void select_socket(char const *name, char const *service, struct addrinfo **addr
 
 int cmdsend(int const argc, char const *argv[])
 {
+        PANIC("not yet implemented!");
         if (argc < 4) {
                 return 1;
         }
@@ -182,6 +192,89 @@ ssize_t dynarray_recv(struct dynarray *restrict msg, int sockfd,
         }
 }
 
+struct accept_clients_args {
+        int sockfd;
+        struct dynarray *clientaddrs;
+        pthread_mutex_t *clientaddrs_lock;
+};
+
+/*
+// contains `struct sockaddr_storage`
+struct dynarray clientaddrs = dynarray_new();
+pthread_mutex_t clientaddrs_lock;
+pthread_mutex_init(&clientaddrs_lock, NULL);
+
+struct accept_clients_args ac_args = { sockfd, &clientaddrs, &clientaddrs_lock };
+pthread_t ac_thread;
+pthread_create(&ac_thread, NULL, (void *(*)(void *))accept_clients, &ac_args);
+*/
+
+/** Continuously accept new clients and add them to `clientaddrs` */
+void *accept_clients(struct accept_clients_args *args)
+{
+        puts("accept_clients()");
+        int sockfd = args->sockfd;
+        struct dynarray *clientaddrs = args->clientaddrs;
+        pthread_mutex_t *clientaddrs_lock = args->clientaddrs_lock;
+        while (true) {
+                struct sockaddr_storage clientaddr;
+                socklen_t clientaddr_sz = sizeof clientaddr;
+                int clientsockfd = accept(sockfd, (struct sockaddr *)&clientaddr, &clientaddr_sz);
+                if (clientsockfd == -1) {
+                        return NULL; // TODO: decide how we should handle this
+                }
+
+                char str[INET6_ADDRSTRLEN];
+                if (inet_ntop_auto((struct sockaddr *)&clientaddr, str) == -1) {
+                        puts("Bad client ignored");
+                        continue;
+                }
+
+                pthread_mutex_lock(clientaddrs_lock);
+                DYNARRAY_PUSH(clientaddrs, struct sockaddr_storage, clientaddr);
+                pthread_mutex_unlock(clientaddrs_lock);
+
+                printf("Client \"%s\" connected\n", str);
+        }
+        return NULL;
+}
+
+struct sockdata {
+        int sockfd;
+        struct cstring name;
+};
+
+ssize_t accept_client(int pubsockfd, struct dynarray *sockdata, int epollfd)
+{
+        struct sockaddr_storage clientaddr;
+        socklen_t clientaddr_sz = sizeof clientaddr;
+        int clientsockfd = accept(pubsockfd, (struct sockaddr *)&clientaddr, &clientaddr_sz);
+        if (clientsockfd == -1) {
+                return -1;
+        }
+
+        char str[INET6_ADDRSTRLEN];
+        if (inet_ntop_auto((struct sockaddr *)&clientaddr, str) == -1) {
+                puts("Bad client");
+        }
+
+        struct epoll_event event;
+        event.events = EPOLLIN;
+        event.data.u64 = dynarray_length(sockdata, TYPEINFO(struct cstring));
+        epoll_ctl(epollfd, EPOLL_CTL_ADD, clientsockfd, &event);
+
+        struct sockdata data;
+        data.sockfd = clientsockfd;
+        data.name = cstring_is("anon");
+        fmt_int(&data.name, &clientsockfd);
+        DYNARRAY_PUSH(sockdata, struct sockdata, data);
+
+        return event.data.u64;
+}
+
+// void terminate_client(int )
+
+/** Test if a message ends with a newline */
 bool terminate_msg(struct dynarray *msg)
 {
         if (msg->len == 0) {
@@ -189,6 +282,18 @@ bool terminate_msg(struct dynarray *msg)
         }
         return ((char *)msg->data)[msg->len - 1] == '\n';
 }
+
+/** Trim any control characters off the end of a `dynarray[char]` */
+void trim_msg(struct dynarray *restrict msg)
+{
+        while (msg->len != 0 &&
+               is_ascii_control(*(char *)dynarray_get(msg, TYPEINFO(uint8_t), msg->len - 1))) {
+                msg->len--;
+        }
+        DYNARRAY_PUSH(msg, uint8_t, '\0');
+}
+
+#define BLUE(S) "\033[0;34m" S "\033[0m"
 
 int cmdlisten(int const argc, char const *argv[])
 {
@@ -200,77 +305,83 @@ int cmdlisten(int const argc, char const *argv[])
         printf("service = '%s'\n\n", service);
 
         struct addrinfo *addrinfos, addrinfo;
-        int sockfd;
-        select_socket(NULL, service, &addrinfos, &addrinfo, &sockfd);
+        int pubsockfd; // People connect with this
+        select_socket(NULL, service, &addrinfos, &addrinfo, &pubsockfd);
 
-        if (bind(sockfd, addrinfo.ai_addr, addrinfo.ai_addrlen) == -1) {
+        if (bind(pubsockfd, addrinfo.ai_addr, addrinfo.ai_addrlen) == -1) {
                 fprintf(stderr, "bind(): %s\n", strerror(errno));
                 exitstatus = 1;
                 goto cmdlisten_cleanup;
         }
 
-        if (listen(sockfd, 1) == -1) {
+        if (listen(pubsockfd, 10) == -1) {
                 fprintf(stderr, "listen(): %s\n", strerror(errno));
                 exitstatus = 1;
                 goto cmdlisten_cleanup;
         }
 
         int yes = 1;
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) == -1) {
+        if (setsockopt(pubsockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes) == -1) {
                 perror("setsockopt");
                 exitstatus = 1;
                 goto cmdlisten_cleanup;
         }
 
-        struct sockaddr_storage clientaddr;
-        socklen_t clientaddr_sz = sizeof clientaddr;
-        int clientsockfd = accept(sockfd, (struct sockaddr *)&clientaddr, &clientaddr_sz);
-        if (clientsockfd == -1) {
-                fprintf(stderr, "accept(): %s\n", strerror(errno));
-                exitstatus = 1;
-                goto cmdlisten_cleanup;
-        }
+        int epollfd = epoll_create1(0);
+        struct epoll_event event = { EPOLLIN, { .fd = pubsockfd } };
+        epoll_ctl(epollfd, EPOLL_CTL_ADD, pubsockfd, &event);
 
-        char str[INET6_ADDRSTRLEN];
-        if (inet_ntop_auto((struct sockaddr *)&clientaddr, str) == -1) {
-                exitstatus = 1;
-                perror("Client had a weird ip address, I'm too scared to continue.");
-                goto cmdlisten_cleanup;
-        }
-        printf("%s connected.\n", str);
+        bool dorun = true;
+        struct dynarray sockdata = dynarray_new(); // struct sockdata
+        struct epoll_event events[MAX_EVENTS];
+        while (dorun) {
+                size_t nr_events = epoll_wait(epollfd, events, MAX_EVENTS, EPOLL_TIMEOUT);
+                struct dynarray msg = dynarray_new();
+                for (size_t i = 0; i < nr_events; ++i) {
+                        if (events[i].data.fd == pubsockfd) {
+                                // A new client connected
+                                ssize_t index = accept_client(pubsockfd, &sockdata, epollfd);
+                                if (index == -1) {
+                                        puts("Client attempted to connect, but was invalid");
+                                }
+                                struct sockdata client = *(struct sockdata *)dynarray_get(
+                                        &sockdata, TYPEINFO(struct sockdata), index);
+                                printf(BLUE("%s connected\n"), cstring_as_cstr(&client.name));
+                        } else {
+                                // An existing client sent us something
+                                struct sockdata client = *(struct sockdata *)dynarray_get(
+                                        &sockdata, TYPEINFO(struct sockdata), events[i].data.u64);
+                                msg.len = 0;
+                                ssize_t recvd = dynarray_recv(&msg, client.sockfd, terminate_msg);
+                                if (recvd == -1) {
+                                        fprintf(stderr, "recv(): %s\n", strerror(errno));
+                                        exitstatus = 1;
+                                        goto cmdlisten_cleanup;
+                                }
 
-        struct dynarray msg = dynarray_new();
-        while (true) {
-                msg.len = 0;
-                ssize_t recvd = dynarray_recv(&msg, clientsockfd, terminate_msg);
-                if (recvd == -1) {
-                        fprintf(stderr, "recv(): %s\n", strerror(errno));
-                        exitstatus = 1;
-                        goto cmdlisten_cleanup;
+                                trim_msg(&msg);
+                                if (recvd == 0 || strcmp((char *)msg.data, "exit") == 0) {
+                                        printf(BLUE("%s disconnected\n"),
+                                               cstring_as_cstr(&client.name));
+                                        epoll_ctl(epollfd, EPOLL_CTL_DEL, client.sockfd, NULL);
+                                        continue;
+                                }
+                                printf("%s: %s\n", cstring_as_cstr(&client.name),
+                                       (char const *)msg.data);
+                        }
                 }
-                if (recvd == 0) {
-                        printf("Client terminated connection.\n");
-                        exitstatus = 0;
-                        goto cmdlisten_cleanup;
-                }
-
-                while (msg.len != 0 && is_ascii_control(*(char *)dynarray_get(
-                                               &msg, TYPEINFO(uint8_t), msg.len - 1))) {
-                        msg.len--;
-                }
-                DYNARRAY_PUSH(&msg, uint8_t, '\0');
-
-                if (strcmp((char *)msg.data, "exit") == 0) {
-                        break;
-                }
-                printf("client: %s\n", (char const *)msg.data);
+                dynarray_free(&msg);
         }
 
 cmdlisten_cleanup:
-        dynarray_free(&msg);
+        for (struct sockdata *client = (struct sockdata *)dynarray_begin(&sockdata);
+             (void *)client != dynarray_end(&sockdata); ++client) {
+                cstring_free(&client->name);
+        }
+        dynarray_free(&sockdata);
         freeaddrinfo(addrinfos);
-        close(sockfd);
-        close(clientsockfd);
+        close(pubsockfd);
+        close(epollfd);
         return exitstatus;
 }
 
