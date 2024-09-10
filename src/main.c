@@ -1,16 +1,5 @@
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <errno.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/epoll.h>
-#include <stdlib.h>
-
+#include "main.h"
+#include "command.h"
 #include "../include/dynarray.h"
 #include "../include/cstring.h"
 #include "../include/fmt.h"
@@ -74,37 +63,6 @@ void trim_msg(struct dynarray *restrict msg)
         DYNARRAY_PUSH(msg, uint8_t, '\0');
 }
 
-#define BLUE(S) "\033[0;34m" S "\033[0m"
-
-#define SOCKSERVER 1
-#define SOCKCLIENT (1 << 1)
-#define CLIENTREG (1 << 2)
-
-struct sockserver {
-        uint32_t flags; // Structural prefixing, be careful
-        int sockfd;
-        struct sockaddr sockaddr;
-};
-
-struct sockclient {
-        uint32_t flags; // Structural prefixing, be careful
-        int sockfd;
-        struct sockaddr sockaddr;
-};
-
-/** Get the type of this socket, either `SOCKSERVER` or `SOCKCLIENT` */
-int socktype(void *sockinfo)
-{
-        uint32_t flags = *(uint32_t *)sockinfo;
-        if (flags & SOCKCLIENT) {
-                return SOCKCLIENT;
-        }
-        if (flags & SOCKSERVER) {
-                return SOCKSERVER;
-        }
-        return 0;
-}
-
 /** Create a new server (listener) socket */
 int add_server_socket(int epollfd, char const *name, char const *service)
 {
@@ -159,6 +117,7 @@ int add_client(int epollfd, int serversockfd)
         client->sockaddr = clientaddr;
         client->flags = SOCKCLIENT;
         client->sockfd = clientsockfd;
+        client->name = NULL;
 
         struct epoll_event event = { EPOLLIN, { .ptr = (void *)client } };
         epoll_ctl(epollfd, EPOLL_CTL_ADD, clientsockfd, &event);
@@ -169,7 +128,21 @@ int add_client(int epollfd, int serversockfd)
 void del_client(int epollfd, struct sockclient *client)
 {
         epoll_ctl(epollfd, EPOLL_CTL_DEL, client->sockfd, NULL);
+        free(client->name);
         free(client);
+}
+
+/** Get the type of this socket, either `SOCKSERVER` or `SOCKCLIENT` */
+int socktype(void *sockinfo)
+{
+        uint32_t flags = *(uint32_t *)sockinfo;
+        if (flags & SOCKCLIENT) {
+                return SOCKCLIENT;
+        }
+        if (flags & SOCKSERVER) {
+                return SOCKSERVER;
+        }
+        return 0;
 }
 
 void handle_event(int epollfd, struct epoll_event ev)
@@ -177,7 +150,7 @@ void handle_event(int epollfd, struct epoll_event ev)
         if (socktype(ev.data.ptr) == SOCKSERVER) {
                 struct sockserver *server = ev.data.ptr;
                 add_client(epollfd, server->sockfd);
-                
+
         } else if (socktype(ev.data.ptr) == SOCKCLIENT) {
                 struct sockclient *client = ev.data.ptr;
                 struct dynarray msg = dynarray_new();
@@ -188,7 +161,15 @@ void handle_event(int epollfd, struct epoll_event ev)
                         return;
                 }
                 trim_msg(&msg);
-                printf("%s\n", (char const *)msg.data);
+                char const *args;
+                switch (select_command(msg.data, &args)) {
+                case COMMAND_SAY:
+                        command_say(client, args);
+                        break;
+                case COMMAND_SETUSER:
+                        command_setuser(client, args);
+                        break;
+                }
         }
 }
 
